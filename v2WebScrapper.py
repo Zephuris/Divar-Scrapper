@@ -1,26 +1,11 @@
-"""
-Divar web scraper (best-effort)
-
-What it does:
-- Crawl Divar listing pages for real-estate ads.
-- For each ad, attempts to extract: price, area (m²), number of rooms.
-
-Notes / requirements:
-- Python 3.9+
-- pip install requests beautifulsoup4 selenium webdriver-manager
-- Use the requests approach first (faster). If Divar blocks or uses heavy JS, use the Selenium function.
-- Respect robots.txt and Divar terms of service. Use rate limiting and reasonable request volume.
-
-Usage example:
-    python divar_scraper.py --city tehran --pages 2
-
-"""
-
 import random
 import re
 import time
 import argparse
 import json
+import geopandas as gpd
+import pandas as pd
+from shapely.geometry import Point
 from typing import List, Dict, Optional
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -52,6 +37,11 @@ mainText = "start text \n"
 # Helper regexes
 NUM_RE = re.compile(r"[\d,\u0660-\u0669]+")
 PERSIAN_DIGITS_MAP = {ord(c): ord('0') + i for i, c in enumerate('۰۱۲۳۴۵۶۷۸۹')}
+
+districts_url = "https://raw.githubusercontent.com/rferdosi/tehran-districts/main/districts.json"
+districts = gpd.read_file(districts_url)
+
+
 
 def Read_Existing_house_File() -> list:
     with open("C:\\Users\\Zephuris\\Desktop\\divar_ads_scrap.json","r") as file:
@@ -101,9 +91,13 @@ def extract_from_ad_html(html: str,link : str) -> Dict[str, Optional[int]]:
     price_match = re.search(r'قیمت کل\s*[^\d]*([\d،]+)', text)
     price_per_m_match = re.search(r"قیمت هر متر\s*[^\d]*([\d،]+)", text)
     floor_match = re.search(r"طبقه\s*(\d+)", text)
+    geometric = re.findall(r'"latitude"\s*:\s*"([^"]+)"[^}]*?"longitude"\s*:\s*"([^"]+)"',html)
+    latitude = re.search(r'"latitude"\s*:\s*"([^"]+)"',html).group(1)
+    longitude = re.search(r'"longitude"\s*:\s*"([^"]+)"',html).group(1)
     has_parking = bool(re.search(r"(پارکینگ|پاركينگ)", text))
     has_storage = bool(re.search(r"(انباری|انبار|انبـاری)",text))
     has_elevator = bool(re.search(r"(آسانسور|اسانسور|آسانسور)",text))
+    houseDistrinct = getDistrinct(latitude,longitude)
     current_house = {
         "area": area_match.group(1).strip() if area_match else None,
         "year": year_match.group(1) if year_match else None,
@@ -114,6 +108,7 @@ def extract_from_ad_html(html: str,link : str) -> Dict[str, Optional[int]]:
         "hasParking":has_parking,
         "haStorage":has_storage,
         "has_elevator":has_elevator,
+        "distrinct" : houseDistrinct,
         "link":link,
     }
     current_house['mainKey'] = "".join(str(int(v)) if isinstance(v, bool) 
@@ -139,6 +134,19 @@ def get_listing_links_from_search_page(html: str) -> List[str]:
     print(f"count listing links : {len(listing_links)}")
 
 
+def getDistrinct(latitude,longtitude):
+    points_df = {
+    'latitude':[latitude],
+    'longitude' : [longtitude]
+    } 
+    geometry = [Point(xy) for xy in zip(points_df['longitude'], points_df['latitude'])]
+    points_gdf = gpd.GeoDataFrame(points_df, geometry=geometry, crs="EPSG:4326")
+
+
+    joined = gpd.sjoin(points_gdf, districts, how="left", predicate="within")
+    result = joined[['latitude','longitude','index_right','name']]  
+    return re.findall(r'\d+',result.at[0,'name'])[0]
+
 
 def scrape_divar_search(city: str = 'tehran', pages: int = 1) -> List[Dict]:
     results = []
@@ -146,16 +154,6 @@ def scrape_divar_search(city: str = 'tehran', pages: int = 1) -> List[Dict]:
     session.headers.update(HEADERS)
 
     for page in range(1, pages + 1):
-        # url_candidates = [
-        #     f'https://divar.ir/s/tehran/buy-residential',
-        #     f'https://divar.ir/s/tehran/real-estate?bbox=51.1461906%2C35.6749039%2C51.3000145%2C35.776329&map_bbox=51.105943%2C35.681953%2C51.259768%2C35.78337&map_place_hash=1%7C%7Creal-estate',
-        #     f'https://divar.ir/s/tehran/real-estate?bbox=51.2479%2C35.7207832%2C51.3525352%2C35.7897491&map_bbox=51.251607%2C35.719956%2C51.356244%2C35.788924&map_place_hash=1%7C%7Creal-estate',
-        #     f'https://divar.ir/s/tehran/real-estate?bbox=51.2359047%2C35.6454468%2C51.366909%2C35.7318649&map_bbox=51.237195%2C35.646217%2C51.366178%2C35.731302&map_place_hash=1%7C%7Creal-estate',
-        #     f'https://divar.ir/s/tehran/real-estate?bbox=51.2957%2C35.6029816%2C51.4541473%2C35.7075462&map_bbox=51.319855%2C35.600782%2C51.478304%2C35.705351&map_place_hash=1%7C%7Creal-estate',
-        #     f'https://divar.ir/s/tehran/real-estate?bbox=51.3772469%2C35.7189178%2C51.5483475%2C35.8316612&map_bbox=51.372454%2C35.719568%2C51.543553%2C35.832312&map_place_hash=1%7C%7Creal-estate',
-        #     f'https://divar.ir/s/tehran/real-estate?bbox=51.4928818%2C35.7033386%2C51.6257%2C35.7908936&map_bbox=51.50179%2C35.696762%2C51.634612%2C35.784324&map_place_hash=1%7C%7Creal-estate',
-        #     f'https://divar.ir/s/tehran/real-estate?bbox=51.4184799%2C35.5917053%2C51.5722%2C35.6931648&map_bbox=51.427451%2C35.597718%2C51.569419%2C35.69142&map_place_hash=1%7C%7Creal-estate'
-        # ]
         html_pages = []
         page_html = None
         for index,url in enumerate(searching_links):
@@ -185,7 +183,6 @@ def scrape_divar_search(city: str = 'tehran', pages: int = 1) -> List[Dict]:
 
             except Exception as e:
                 print('Error fetching ad', adlink, e)
-
     return results
 
 
@@ -252,7 +249,6 @@ def scrape_with_selenium(search_url: str, max_ads: int = 50) -> List[Dict]:
 
         scrolls += 1
 
-    # fallback: try window/document scroll and PAGE_DOWN if nothing changed
     if no_change >= max_no_change:
         print("no further change detected with container scroll — trying window scroll and PAGE_DOWN fallback")
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -262,7 +258,7 @@ def scrape_with_selenium(search_url: str, max_ads: int = 50) -> List[Dict]:
             body.send_keys(Keys.PAGE_DOWN)
             time.sleep(0.5)
 
-    time.sleep(1)  # final wait
+    time.sleep(1)  
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     get_listing_links_from_search_page(str(soup))
